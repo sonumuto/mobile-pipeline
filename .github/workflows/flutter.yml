@@ -1,5 +1,5 @@
 ---
-name: Dart
+name: Flutter CI
 
 on:
   push:
@@ -7,8 +7,12 @@ on:
   pull_request:
     branches: ["main"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,6 +22,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.24.0
+          cache: true
 
       - name: Get Flutter
         run: flutter pub get
@@ -25,14 +30,75 @@ jobs:
       - name: Flutter Test
         run: flutter test
 
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Static Analysis
         run: flutter analyze
+
+  android-build:
+    needs: checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.24.0
+          cache: true
+
+      # android/ is gitignored, so regenerate it. --project-name is required:
+      # flutter create derives the name from the directory, and the repo folder
+      # ("mobile-pipeline") is not a valid Dart package name.
+      - name: Generate Android project
+        run: flutter create --platforms=android --project-name food_delivery_app .
+
+      - name: Get Flutter
+        run: flutter pub get
 
       - name: Build APK
         run: flutter build apk
 
+      - name: Build App Bundle
+        run: flutter build appbundle
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: android-release
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/bundle/release/app-release.aab
+          retention-days: 7
+
+  ios-build:
+    needs: checks
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.24.0
+          cache: true
+
+      - name: Generate iOS project
+        run: flutter create --platforms=ios --project-name food_delivery_app .
+
+      - name: Get Flutter
+        run: flutter pub get
+
+      # No signing certificates in CI, so build unsigned.
+      - name: Build iOS
+        run: flutter build ios --release --no-codesign
